@@ -1,0 +1,17 @@
+body: |
+  Hello Team 👋,
+
+  A new version of the Trading Assistant App has just been published!
+
+  📱 Version: v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}
+  🗒️ Changelog:
+  $(cat fastlane/metadata/android/en-US/changelogs/${{ steps.bump.outputs.version_code }}.txt)
+
+  🚀 Uploaded to Google Play Production track
+  💾 APK also available on GitHub Releases:
+  https://github.com/${{ github.repository }}/releases/tag/v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}
+
+  ✅ Current Build Status:
+  ![Build Status](https://github.com/${{ github.repository }}/actions/workflows/flutter-release.yml/badge.svg)
+
+  — Automated Release System
