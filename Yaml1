@@ -1,0 +1,140 @@
+name: Build, Publish & Email Release Report
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    env:
+      FLUTTER_VERSION: 3.24.3
+      JAVA_VERSION: '17'
+
+    steps:
+      # === 1. Checkout source ===
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # === 2. Setup Java & Flutter ===
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # === 3. Auto-version bump ===
+      - name: Auto-increment version
+        id: bump
+        run: |
+          CURRENT_VERSION=$(grep 'version:' pubspec.yaml | awk '{print $2}')
+          VERSION_NAME=$(echo $CURRENT_VERSION | cut -d'+' -f1)
+          VERSION_CODE=$(echo $CURRENT_VERSION | cut -d'+' -f2)
+          NEW_CODE=$((VERSION_CODE+1))
+          echo "New version: ${VERSION_NAME}+${NEW_CODE}"
+          sed -i "s/version: .*/version: ${VERSION_NAME}+${NEW_CODE}/" pubspec.yaml
+          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "version_code=${NEW_CODE}" >> $GITHUB_OUTPUT
+
+      # === 4. Auto-changelog ===
+      - name: Generate changelog
+        id: changelog
+        run: |
+          mkdir -p fastlane/metadata/android/en-US/changelogs
+          CHANGELOG_FILE=fastlane/metadata/android/en-US/changelogs/${{ steps.bump.outputs.version_code }}.txt
+          echo "Changelog for version ${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}" > $CHANGELOG_FILE
+          git log -1 --pretty=%B >> $CHANGELOG_FILE
+
+      # === 5. Setup signing ===
+      - name: Decode keystore
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > ./android/app/my-release-key.jks
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
+      - name: Create key.properties
+        run: |
+          cat > android/key.properties <<EOL
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=app/my-release-key.jks
+          EOL
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses || true
+
+      # === 6. Build app ===
+      - name: Build release appbundle (.aab)
+        run: flutter build appbundle --release
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      # === 7. Upload to Play Store ===
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.klarinet.tradingassistant
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: production
+          status: completed
+          whatsNewDirectory: fastlane/metadata/android/en-US/changelogs/
+
+      # === 8. Create GitHub release ===
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Trading Assistant v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}"
+          tag_name: "v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}"
+          body_path: fastlane/metadata/android/en-US/changelogs/${{ steps.bump.outputs.version_code }}.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}"
+          files: build/app/outputs/flutter-apk/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # === 9. Send email notification ===
+      - name: Send Email Notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "✅ Trading Assistant v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }} Released!"
+          to: ${{ secrets.EMAIL_TO }}
+          from: KLARINET ROYAL CHILAS CI/CD <${{ secrets.EMAIL_USERNAME }}>
+          body: |
+            Hello Team 👋,
+
+            A new version of the Trading Assistant App has just been published!
+
+            📱 Version: v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}
+            🗒️ Changelog:
+            $(cat fastlane/metadata/android/en-US/changelogs/${{ steps.bump.outputs.version_code }}.txt)
+
+            🚀 Uploaded to Google Play Production track
+            💾 APK also available on GitHub Releases:
+            https://github.com/${{ github.repository }}/releases/tag/v${{ steps.bump.outputs.version_name }}+${{ steps.bump.outputs.version_code }}
+
+            — Automated Release System
